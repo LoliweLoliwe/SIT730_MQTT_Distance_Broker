@@ -1,0 +1,184 @@
+#include <WiFiNINA.h>
+#include <Wire.h>
+#include <WiFiClient.h>
+#include <PubSubClient.h>
+#include <MQTT.h>
+
+const char * ssid = "xxxx";
+const char * password ="xxxx";
+const char* mqtt_server = "broker.emqx.io";         //broker.mqtt-dashboard.com
+
+char   HOST_NAME[] = "hooks.zapier.com";
+String PATH_NAME   = "/hooks/catch/xxx/xxx/"; // change your EVENT-NAME and YOUR-KEY
+
+int trigPin = 2;    // Trigger
+int echoPin = 4;    // Echo
+int duration, cm, inches;
+int pin5 = 5;
+unsigned long secTimer = 0;
+int time = 0;
+bool watcher = true;
+bool emailSent1 = false;
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+unsigned long lastMsg = 0;
+#define MSG_BUFFER_SIZE	(50)
+char msg[MSG_BUFFER_SIZE];
+char queryString[MSG_BUFFER_SIZE];
+int period = 500;
+int value = 0;
+
+void setup_wifi() {
+
+  delay(10);
+  // We start by connecting to a WiFi network
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  //WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  randomSeed(micros());
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
+
+  // Switch on the LED if the value received is not 0 or 1 cm
+  if ((char)payload[0] > '4') {
+    blinkLed(3, period);
+  }
+
+  if (length == 0) {
+    //value = cm;
+    snprintf (msg, MSG_BUFFER_SIZE, "The 10th reading is: %ld", topic);
+    if (emailSent1 == false) {  // to make sure that Arduino does not send duplicated emails
+      sendIFTTTemail(topic);
+      delay(2000);
+      emailSent1 = true;
+    } else {
+      emailSent1 = false;  // reset to send if the temperature exceeds threshold again
+    }    
+  }
+}
+
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Create a random client ID
+    String clientId = "mqttx_ceff18a2";
+    clientId += String(random(0xffff), HEX);
+    // Attempt to connect
+    if (client.connect(clientId.c_str())) {
+      Serial.println("connected");
+      // Once connected, publish an announcement...
+      client.publish("ultrasonic/dist", "It works.... Halala");
+      // ... and resubscribe
+      client.subscribe("ultrasonic/dist");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
+void setup() {
+  pinMode(pin5, OUTPUT);    // Initialize PIN 5 as an output
+  Serial.begin(115200);
+  setup_wifi();
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+  //Define inputs and outputs
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+}
+
+void loop() {
+
+  // The sensor is triggered by a HIGH pulse of 10 or more microseconds.
+  // Give a short LOW pulse beforehand to ensure a clean HIGH pulse:
+  
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+ 
+  // Read the signal from the sensor: a HIGH pulse whose
+  // duration is the time (in microseconds) from the sending
+  // of the ping to the reception of its echo off of an object.
+  
+  duration = pulseIn(echoPin, HIGH);
+  delay(25);
+
+  // Convert the time into a distance
+  cm = (duration/2) / 29.1;     // Divide by 29.1 or multiply by 0.0343
+
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+
+  unsigned long now = millis();
+  if (now - lastMsg > 2000) {
+    lastMsg = now;
+    value = cm;
+    //snprintf (msg, MSG_BUFFER_SIZE, "Distance is: %ld", value);
+    snprintf (msg, MSG_BUFFER_SIZE, "%ld", value);
+    Serial.print("Publish message: ");
+    Serial.println(msg);
+    client.publish("ultrasonic/dist", msg);
+  }
+}
+
+void blinkLed(int repeats, int time)
+{
+  for (int i = 0; i < repeats; i++)
+  {
+    digitalWrite(pin5, LOW);   // Turn the LED on (Note that LOW is the voltage level
+    // but actually the LED is on; this is because
+    // it is active low on the ESP-01)
+    delay(time);
+    digitalWrite(pin5, HIGH);  // Turn the LED off by making the voltage HIGH
+    delay(time);
+    digitalWrite(pin5, LOW);
+  }
+  watcher = false;
+}
+
+void sendIFTTTemail(char* topic){
+  // make a HTTP request:
+  // send HTTP header
+  snprintf(queryString, MSG_BUFFER_SIZE, "%ld and Device: ultrasonic/dist", topic);
+  client.println("POST " + PATH_NAME + queryString + " HTTP/1.1");
+  client.println("Host: " + String(HOST_NAME));
+  client.println("Connection: close");
+  client.println(); // end HTTP header
+
+  // the server's disconnected, stop the client:
+  /*client.stop();
+  Serial.println();
+  Serial.println("disconnected");*/
+}
